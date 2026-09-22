@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>LFM2.5-350M — Browser Chat (llama.cpp)</title>
+<title>LFM2.5 Chat</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -13,45 +13,42 @@
     height: 100dvh; display: flex; flex-direction: column;
   }
   header {
-    padding: 10px 14px; padding-top: max(10px, env(safe-area-inset-top));
+    padding: 8px 14px; padding-top: max(8px, env(safe-area-inset-top));
     border-bottom: 1px solid #23262e; display: flex; align-items: center; gap: 8px;
   }
-  header h1 { font-size: 15px; font-weight: 600; flex: 1; }
-  #device-badge {
-    font-size: 11px; padding: 3px 8px; border-radius: 99px;
-    background: #23262e; color: #9aa3b2;
+  header h1 { font-size: 15px; font-weight: 600; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  select {
+    background: #1c1f27; color: #e6e8ee; border: 1px solid #2c3040;
+    border-radius: 8px; padding: 4px 6px; font-size: 12px; max-width: 46%;
   }
-  #log {
-    flex: 1; overflow-y: auto; padding: 14px;
-    display: flex; flex-direction: column; gap: 10px;
-  }
+  #log { flex: 1; overflow-y: auto; padding: 14px;
+    display: flex; flex-direction: column; gap: 10px; }
   .msg { max-width: 88%; padding: 10px 13px; border-radius: 14px;
          line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
   .msg.user { align-self: flex-end; background: #2b5cd9; border-bottom-right-radius: 4px; }
   .msg.assistant { align-self: flex-start; background: #1c1f27; border-bottom-left-radius: 4px; }
   .msg.err { align-self: stretch; background: #331a1e; color: #f87171; font-size: 13px; }
   .msg.sys { align-self: stretch; background: none; color: #9aa3b2; font-size: 12px; text-align: center; }
+  .msg img { max-width: 100%; max-height: 220px; border-radius: 8px; margin-top: 6px; display: block; }
+  .msg.assistant.thinking::after { content: '…'; animation: pulse 1.2s infinite; display: inline-block; }
+  @keyframes pulse { 0%,100% { opacity: .2 } 50% { opacity: 1 } }
   #load-panel { padding: 14px; border-top: 1px solid #23262e; font-size: 13px; }
-  #load-panel .bar {
-    height: 6px; background: #23262e; border-radius: 3px; margin: 8px 0; overflow: hidden;
-  }
+  #load-panel .bar { height: 6px; background: #23262e; border-radius: 3px; margin: 8px 0; overflow: hidden; }
   #load-panel .bar > div { height: 100%; width: 0%; background: #4ade80; transition: width .2s; }
   #file-label { color: #9aa3b2; font-size: 12px; }
   #gen-status { font-size: 11px; color: #9aa3b2; text-align: center; padding: 4px; min-height: 20px; }
-  form {
-    display: flex; gap: 8px;
-    padding: 10px 14px; padding-bottom: max(10px, env(safe-area-inset-bottom));
-    border-top: 1px solid #23262e;
-  }
+  form { display: flex; gap: 6px;
+    padding: 8px 14px; padding-bottom: max(8px, env(safe-area-inset-bottom));
+    border-top: 1px solid #23262e; align-items: center; }
+  #attach-btn { background: #1c1f27; border: 1px solid #2c3040; border-radius: 10px;
+    padding: 10px 12px; font-size: 16px; cursor: pointer; display: none; }
+  #attach-btn.on { display: block; }
   input[type=text] {
     flex: 1; background: #1c1f27; border: 1px solid #2c3040; color: #e6e8ee;
-    border-radius: 12px; padding: 12px 14px; font-size: 16px; outline: none;
-  }
+    border-radius: 12px; padding: 12px 14px; font-size: 16px; outline: none; }
   input[type=text]:focus { border-color: #4ade80; }
-  button {
-    background: #2b5cd9; border: none; color: #fff; border-radius: 12px;
-    padding: 0 18px; font-size: 15px; font-weight: 600; cursor: pointer;
-  }
+  button { background: #2b5cd9; border: none; color: #fff; border-radius: 12px;
+    padding: 0 16px; font-size: 15px; font-weight: 600; cursor: pointer; }
   button:disabled { opacity: .4; cursor: default; }
   #stop-btn { background: #7f1d1d; display: none; }
   footer { font-size: 11px; color: #6b7280; padding: 0 14px 8px;
@@ -61,10 +58,13 @@
 <body>
 <header>
   <h1 id="model-title">Loading…</h1>
-  <span id="device-badge">loading…</span>
+  <select id="model-select" title="Switch model (reloads page)">
+    <option value="350m">350M text</option>
+    <option value="vl450">VL-450M vision</option>
+  </select>
 </header>
 <div id="log">
-  <div class="msg sys" id="status">Downloading model (~250 MB, cached after first load)…</div>
+  <div class="msg sys" id="status">Downloading model…</div>
 </div>
 <div id="load-panel">
   <div class="bar"><div id="bar-fill"></div></div>
@@ -72,48 +72,63 @@
 </div>
 <div id="gen-status"></div>
 <form id="chat-form">
+  <input type="file" id="image-input" accept="image/*" capture="environment" hidden>
+  <button id="attach-btn" type="button">📷</button>
   <input type="text" id="prompt" placeholder="Loading model…" autocomplete="off" disabled>
   <button id="stop-btn" type="button">Stop</button>
   <button id="send-btn" type="submit" disabled>Send</button>
 </form>
-<footer>Runs 100% in your browser (llama.cpp/WebAssembly). Nothing leaves your device.</footer>
+<footer>Runs 100% in your browser. Nothing leaves your device.</footer>
 
 <script type="module">
 import { Wllama } from "https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/esm/index.js";
 
-const GGUF = "https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF/resolve/main/LFM2.5-350M-Q4_K_M.gguf";
-const N_CTX = 2048; // ponytail: keep context small — phone memory ceiling, raise on desktop
+// ponytail: unified single page; model via ?model= or header select
+const MODELS = {
+  "350m": {
+    label: "LFM2.5-350M",
+    hf: { repo: "LiquidAI/LFM2.5-350M-GGUF", quant: "Q4_K_M" },
+    vision: false,
+  },
+  "vl450": {
+    label: "LFM2.5-VL-450M",
+    hf: { repo: "LiquidAI/LFM2.5-VL-450M-GGUF", quant: "Q4_0", mmprojQuant: "Q8_0" },
+    vision: true,
+  },
+};
+const PARAMS = new URLSearchParams(location.search);
+const KEY = MODELS[PARAMS.get("model")] ? PARAMS.get("model") : "350m";
+const CFG = MODELS[KEY];
+const N_CTX = 2048; // phone memory ceiling; raise on desktop
 const MAX_TOKENS = 512;
 
 const $ = id => document.getElementById(id);
 const log = $("log");
-$("model-title").textContent = "LFM2.5-350M (GGUF)";
+$("model-title").textContent = CFG.label;
+$("model-select").value = KEY;
+$("model-select").addEventListener("change", e =>
+  location.replace(location.pathname + "?model=" + e.target.value));
 
 function addMsg(role, text) {
   const d = document.createElement("div");
   d.className = "msg " + role;
-  d.textContent = text;
+  if (text) d.textContent = text;
   log.appendChild(d);
   log.scrollTop = log.scrollHeight;
   return d;
 }
 
-const wllama = new Wllama({
-  default: "https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/esm/wasm/wllama.wasm",
-});
-wllama.setCompat("default"); // Safari/old browsers get compat build from CDN automatically
-$("device-badge").textContent = "llama.cpp WASM";
+const wllama = new Wllama({ default: "https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/esm/wasm/wllama.wasm" });
+wllama.setCompat("default"); // auto: Safari/old browsers get compat build from CDN
 
 try {
-  await wllama.loadModelFromUrl(GGUF, {
+  await wllama.loadModelFromHF(CFG.hf, {
     n_ctx: N_CTX,
-    progressCallback: p => {
-      // handle both ({loaded,total}) and (loaded, total) callback shapes
-      const { loaded = p, total } = p?.loaded !== undefined ? p : { loaded: arguments[1], total: arguments[2] };
+    progressCallback: ({ loaded, total }) => {
       if (total) {
-        const pct = (loaded / total * 100);
+        const pct = loaded / total * 100;
         $("bar-fill").style.width = pct + "%";
-        $("file-label").textContent = `LFM2.5-350M-Q4_K_M.gguf — ${pct.toFixed(1)}% (${(loaded/1e6).toFixed(0)}/${(total/1e6).toFixed(0)} MB)`;
+        $("file-label").textContent = `Downloading — ${pct.toFixed(1)}% (${(loaded/1e6).toFixed(0)}/${(total/1e6).toFixed(0)} MB)`;
       }
     },
   });
@@ -122,16 +137,33 @@ try {
   $("status").textContent = "Model ready. Cached for next visits.";
   $("prompt").disabled = false;
   $("send-btn").disabled = false;
-  $("prompt").placeholder = "Message…";
+  $("prompt").placeholder = CFG.vision ? "Message… (📷 attaches a photo)" : "Message…";
+  if (CFG.vision) $("attach-btn").classList.add("on");
+  $("prompt").focus();
 } catch (e) {
   $("status").textContent = "Model load failed";
-  addMsg("err", "Load error: " + (e?.message || e) + (e?.stack ? "\n\n" + e.stack : ""));
+  addMsg("err", "Load error: " + (e?.message || e) + (e?.stack ? "\n\n" + e.stack.split("\n").slice(0, 6).join("\n") : ""));
   console.error("load failed", e);
   throw e;
 }
 
-const history = [];
+const history = []; // {role, content} — content is string (text) or array (vision)
 let busy = false;
+let pendingImage = null; // { data: ArrayBuffer, url: string }
+
+// --- image attach (only for vision models) ---
+$("attach-btn").addEventListener("click", () => $("image-input").click());
+$("image-input").addEventListener("change", ev => {
+  const f = ev.target.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    if (pendingImage?.url) URL.revokeObjectURL(pendingImage.url);
+    pendingImage = { data: e.target.result, url: URL.createObjectURL(f) };
+    $("prompt").placeholder = "Photo attached — ask about it…";
+  };
+  reader.readAsArrayBuffer(f);
+});
 
 $("stop-btn").addEventListener("click", () => { try { wllama.stopCompletion(); } catch {} });
 
@@ -139,51 +171,87 @@ $("chat-form").addEventListener("submit", async ev => {
   ev.preventDefault();
   if (busy) return;
   const text = $("prompt").value.trim();
-  if (!text) return;
+  if (!text && !pendingImage) return;
   busy = true;
   $("prompt").value = "";
   $("prompt").disabled = true;
   $("send-btn").disabled = true;
   $("stop-btn").style.display = "";
-  $("prompt").placeholder = "Generating… (Stop button cancels)";
-  addMsg("user", text);
+  $("prompt").placeholder = "Generating… (Stop cancels)";
 
-  history.push({ role: "user", content: text });
+  // user bubble (with photo thumbnail if attached)
+  const bubble = addMsg("user", text);
+  let content;
+  if (pendingImage) {
+    const img = document.createElement("img");
+    img.src = pendingImage.url;
+    bubble.appendChild(img);
+    content = [{ type: "image", data: pendingImage.data }, { type: "text", text }];
+    $("prompt").placeholder = "Message… (📷 attaches a photo)";
+    pendingImage = null;
+  } else {
+    content = text;
+  }
+  history.push({ role: "user", content });
   if (history.length > 12) history.splice(0, history.length - 12);
 
   const out = addMsg("assistant", "");
   out.classList.add("thinking");
   const t0 = Date.now();
-  $("gen-status").textContent = "Generating on CPU — first response can take a minute on a phone…";
+  $("gen-status").textContent = CFG.vision && history.length <= 2
+    ? "Encoding image on CPU — this can take a while on a phone…"
+    : "Generating on CPU…";
 
+  let acc = "";
   try {
-    let acc = "";
-    // createChatCompletion crashes in wllama 3.6.1 (GLUE readback bug); use raw
-    // createCompletion with the LFM2.5 template hand-rolled.
-    let prompt = "<|startoftext|>";
-    for (const m of history) prompt += `${m.role}\n${m.content}\n`;
-    prompt += "assistant\n";
-    await wllama.createCompletion({
-      prompt,
-      max_tokens: MAX_TOKENS,
-      temperature: 0.3,
-      top_p: 0.9,
-      stop: ["\nuser\n", "<|endof"],
-      stream: true,
-      onData: chunk => {
-        const t = chunk.choices[0].text;
-        if (!acc) { out.classList.remove("thinking"); }
+    if (CFG.vision) {
+      const stream = await wllama.createChatCompletion({
+        messages: history,
+        max_tokens: MAX_TOKENS,
+        temperature: 0.2,
+        stream: true,
+      });
+      for await (const chunk of stream) {
+        const t = chunk.choices[0]?.delta?.content;
+        if (!t) continue;
+        if (!acc) out.classList.remove("thinking");
         acc += t;
         out.textContent = acc;
         $("gen-status").textContent = `Generating… ${((Date.now()-t0)/1000).toFixed(0)}s`;
         log.scrollTop = log.scrollHeight;
-      },
-    });
+      }
+    } else {
+      // createChatCompletion crashes in wllama 3.6.1 (GLUE readback bug) — raw
+      // completion with hand-rolled LFM2.5 template.
+      // ponytail: revisit when wllama ships a fix
+      let prompt = "<|startoftext|>";
+      for (const m of history) {
+        const c = typeof m.content === "string" ? m.content : m.content.map(p => p.text || "").join(" ");
+        prompt += `${m.role}\n${c}\n`;
+      }
+      prompt += "assistant\n";
+      await wllama.createCompletion({
+        prompt,
+        max_tokens: MAX_TOKENS,
+        temperature: 0.3,
+        top_p: 0.9,
+        stop: ["\nuser\n", "<|endof"],
+        stream: true,
+        onData: chunk => {
+          const t = chunk.choices[0].text;
+          if (!acc) out.classList.remove("thinking");
+          acc += t;
+          out.textContent = acc;
+          $("gen-status").textContent = `Generating… ${((Date.now()-t0)/1000).toFixed(0)}s`;
+          log.scrollTop = log.scrollHeight;
+        },
+      });
+    }
     if (!acc) out.textContent = "(no output)";
     history.push({ role: "assistant", content: acc });
   } catch (e) {
     out.className = "msg err";
-    out.textContent = "Generation error: " + (e?.message || e);
+    out.textContent = "Generation error: " + (e?.message || e) + (e?.stack ? "\n" + e.stack.split("\n").slice(0, 6).join("\n") : "");
   } finally {
     busy = false;
     $("stop-btn").style.display = "none";
