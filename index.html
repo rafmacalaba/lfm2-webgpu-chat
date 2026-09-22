@@ -111,8 +111,12 @@ function addMsg(role, text) {
   return d;
 }
 
+const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent)
+  || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
 async function pickDevice() {
-  if (!navigator.gpu) return { device: "wasm", dtype: "q4", label: "WASM (no WebGPU — slow)" };
+  // ponytail: iOS WebKit WebGPU (26+) hangs ORT session-create; force WASM until reliable
+  if (IS_IOS || !navigator.gpu) return { device: "wasm", dtype: "q4", label: IS_IOS ? "WASM (iOS — WebGPU unreliable)" : "WASM (no WebGPU — slow)" };
   try {
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) return { device: "wasm", dtype: "q4", label: "WASM (no GPU adapter)" };
@@ -141,6 +145,8 @@ try {
       if (p.status === "progress" && p.total) {
         $("bar-fill").style.width = (p.progress || 0) + "%";
         $("file-label").textContent = `${p.file} — ${(p.progress || 0).toFixed(1)}%`;
+      } else if (p.status === "done") {
+        $("file-label").textContent = "Download complete — preparing engine…";
       } else if (p.status === "ready") {
         $("bar-fill").style.width = "100%";
         $("file-label").textContent = "Model ready";
