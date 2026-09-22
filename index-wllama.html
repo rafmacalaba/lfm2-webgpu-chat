@@ -150,6 +150,39 @@ try {
 const history = []; // {role, content} — content is string (text) or array (vision)
 let busy = false;
 let pendingImage = null; // { data: ArrayBuffer, url: string }
+window.__gc = () => ({ historyLen: history.length,
+  imageBufsLeft: history.filter(m => Array.isArray(m.content) && m.content.some(p => p.type === "image")).length });
+
+// --- context garbage collector ---
+// Images pinned in history are the killer: one 640px JPEG buffer is small, but
+// N chats × image buffers + a history longer than n_ctx = tab death. So:
+//   1. strip image data from every user message except the most recent
+//   2. drop oldest messages when estimated tokens exceed the budget
+const N_CTX_TOKENS = 2048;
+const CTX_BUDGET = 1400; // leave headroom for the reply (ponytail: fixed budget; could read model n_ctx)
+const estTokens = c =>
+  Math.ceil((typeof c === "string" ? c : c.map(p => p.type === "text" ? p.text : "[photo]").join(" ")).length / 3.5);
+
+function gcHistory() {
+  // 1. free image buffers from all but the last user message
+  for (let i = 0; i < history.length - 1; i++) {
+    const m = history[i];
+    if (Array.isArray(m.content)) {
+      const txt = m.content.filter(p => p.type === "text").map(p => p.text).join(" ");
+      m.content = (txt || "[photo]") + " [photo was shared]";
+    }
+  }
+  // 2. drop oldest until under budget (always keep at least 1 exchange)
+  let dropped = 0;
+  let total = history.reduce((s, m) => s + estTokens(m.content), 0);
+  while (history.length > 2 && total > CTX_BUDGET) {
+    total -= estTokens(history[0].content);
+    history.shift();
+    dropped++;
+  }
+  if (dropped) addMsg("sys", `🧹 trimmed ${dropped} old message${dropped > 1 ? "s" : ""} to stay in context (~${total}/${N_CTX_TOKENS} tok)`);
+  return total;
+}
 
 // --- image attach (only for vision models) ---
 $("attach-btn").addEventListener("click", () => $("image-input").click());
@@ -200,7 +233,7 @@ $("chat-form").addEventListener("submit", async ev => {
     content = text;
   }
   history.push({ role: "user", content });
-  if (history.length > 12) history.splice(0, history.length - 12);
+  gcHistory();
 
   const out = addMsg("assistant", "");
   out.classList.add("thinking");
@@ -256,6 +289,7 @@ $("chat-form").addEventListener("submit", async ev => {
     }
     if (!acc) out.textContent = "(no output)";
     history.push({ role: "assistant", content: acc });
+    gcHistory();
   } catch (e) {
     out.className = "msg err";
     out.textContent = "Generation error: " + (e?.message || e) + (e?.stack ? "\n" + e.stack.split("\n").slice(0, 6).join("\n") : "");
