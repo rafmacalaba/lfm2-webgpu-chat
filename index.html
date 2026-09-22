@@ -70,7 +70,7 @@
 </head>
 <body>
 <header>
-  <h1>LFM2.5-2.6B</h1>
+  <h1 id="model-title">Loading…</h1>
   <span id="device-badge">loading…</span>
 </header>
 <div id="log">
@@ -130,6 +130,7 @@ async function pickDevice() {
 try { navigator.storage?.persist?.(); } catch {}
 
 const sel = await pickDevice();
+$("model-title").textContent = MODEL.split("/").pop().replace("-ONNX", "");
 if (PARAMS.get("dtype")) sel.dtype = PARAMS.get("dtype");
 badge.textContent = sel.label + (PARAMS.get("dtype") ? ` (forced ${sel.dtype})` : "");
 badge.className = sel.device === "webgpu" ? "gpu" : "wasm";
