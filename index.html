@@ -89,6 +89,10 @@
 <footer>Runs 100% in your browser. Nothing leaves your device.</footer>
 
 <script type="module">
+// iOS WebKit can't run ORT reliably — send iPhones to the llama.cpp page
+if (/iP(hone|ad|od)/.test(navigator.userAgent) && !location.pathname.includes("wllama"))
+  location.replace("index-wllama.html");
+
 import { pipeline, TextStreamer } from
   "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0";
 
