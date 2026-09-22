@@ -87,7 +87,7 @@ import { pipeline, TextStreamer } from
 
 // ponytail: ?model= and ?dtype= overrides for testing; drop when shipping
 const PARAMS = new URLSearchParams(location.search);
-const MODEL = PARAMS.get("model") || "LiquidAI/LFM2.5-2.6B-ONNX";
+const MODEL = PARAMS.get("model") || "LiquidAI/LFM2.5-1.2B-Instruct-ONNX";
 const MAX_NEW_TOKENS = 512;
 const HISTORY_CAP = 12; // messages kept in context (KV cache size on mobile)
 
