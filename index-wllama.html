@@ -153,16 +153,23 @@ let pendingImage = null; // { data: ArrayBuffer, url: string }
 
 // --- image attach (only for vision models) ---
 $("attach-btn").addEventListener("click", () => $("image-input").click());
-$("image-input").addEventListener("change", ev => {
+$("image-input").addEventListener("change", async ev => {
   const f = ev.target.files[0];
   if (!f) return;
-  const reader = new FileReader();
-  reader.onload = e => {
-    if (pendingImage?.url) URL.revokeObjectURL(pendingImage.url);
-    pendingImage = { data: e.target.result, url: URL.createObjectURL(f) };
-    $("prompt").placeholder = "Photo attached — ask about it…";
-  };
-  reader.readAsArrayBuffer(f);
+  // Downscale to a small JPEG: iPhone photos are 12MP/3-5MB (and HEIC, which
+  // llama.cpp can't decode). ~640px keeps vision quality, cuts memory ~40x.
+  // ponytail: 640px ceiling; raise if detail tasks need more
+  const MAX_DIM = 640;
+  const img = await createImageBitmap(f);
+  const scale = Math.min(1, MAX_DIM / Math.max(img.width, img.height));
+  const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+  const canvas = new OffscreenCanvas(w, h);
+  canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+  const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+  const data = await blob.arrayBuffer();
+  if (pendingImage?.url) URL.revokeObjectURL(pendingImage.url);
+  pendingImage = { data, url: URL.createObjectURL(blob) };
+  $("prompt").placeholder = "Photo attached — ask about it…";
 });
 
 $("stop-btn").addEventListener("click", () => { try { wllama.stopCompletion(); } catch {} });
