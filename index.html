@@ -32,6 +32,12 @@
   .msg.user { align-self: flex-end; background: #2b5cd9; border-bottom-right-radius: 4px; }
   .msg.assistant { align-self: flex-start; background: #1c1f27; border-bottom-left-radius: 4px; }
   .msg.err { align-self: stretch; background: #331a1e; color: #f87171; font-size: 13px; }
+  .msg.assistant.thinking::after {
+    content: '…'; animation: pulse 1.2s infinite; display: inline-block;
+  }
+  @keyframes pulse { 0%,100% { opacity: .2 } 50% { opacity: 1 } }
+  #gen-status { font-size: 11px; color: #9aa3b2; text-align: center; padding: 4px;
+                min-height: 20px; }
   .msg.sys { align-self: stretch; background: none; color: #9aa3b2; font-size: 12px; text-align: center; }
   #load-panel {
     padding: 14px; border-top: 1px solid #23262e; font-size: 13px;
@@ -74,8 +80,9 @@
   <div class="bar"><div id="bar-fill"></div></div>
   <div id="file-label">—</div>
 </div>
+<div id="gen-status"></div>
 <form id="chat-form">
-  <input type="text" id="prompt" placeholder="Message…" autocomplete="off" disabled>
+  <input type="text" id="prompt" placeholder="Loading model…" autocomplete="off" disabled>
   <button id="stop-btn" type="button">Stop</button>
   <button id="send-btn" type="submit" disabled>Send</button>
 </form>
@@ -139,8 +146,10 @@ try {
         $("file-label").textContent = "Model ready";
         $("load-panel").style.display = "none";
         $("status").textContent = "Model ready. Cached for next visits.";
+        $("gen-status").textContent = "";
         $("prompt").disabled = false;
         $("send-btn").disabled = false;
+        $("prompt").placeholder = "Message…";
         $("prompt").focus();
       }
     },
@@ -167,20 +176,32 @@ $("chat-form").addEventListener("submit", async ev => {
   $("prompt").disabled = true;
   $("send-btn").disabled = true;
   $("stop-btn").style.display = "";
+  $("prompt").placeholder = "Generating… (Stop button cancels)";
   addMsg("user", text);
 
   const history = [...document.querySelectorAll(".msg.user, .msg.assistant")]
     .slice(-HISTORY_CAP)
     .map(el => ({ role: el.classList.contains("user") ? "user" : "assistant",
                   content: el.textContent }));
-  const out = addMsg("assistant", "…");
+  const out = addMsg("assistant", "");
+  out.classList.add("thinking");
+  const t0 = Date.now();
+  $("gen-status").textContent = sel.device === "webgpu"
+    ? "Generating…"
+    : "Generating on CPU (WASM) — first response can take 1–5 min on a phone…";
   interrupt = () => { generator?.interrupt(); };
 
   try {
     let acc = "";
     const streamer = new TextStreamer(generator.tokenizer, {
       skip_prompt: true,
-      callback_function: t => { acc += t; out.textContent = acc; log.scrollTop = log.scrollHeight; },
+      callback_function: t => {
+        if (!acc) { out.classList.remove("thinking"); out.textContent = ""; }
+        acc += t; out.textContent = acc;
+        $("gen-status").textContent =
+          `Generating… ${((Date.now()-t0)/1000).toFixed(0)}s`;
+        log.scrollTop = log.scrollHeight;
+      },
     });
     await generator(history, { max_new_tokens: MAX_NEW_TOKENS, do_sample: false, streamer });
     if (!acc) out.textContent = "(no output)";
@@ -191,8 +212,10 @@ $("chat-form").addEventListener("submit", async ev => {
     busy = false;
     interrupt = null;
     $("stop-btn").style.display = "none";
+    $("gen-status").textContent = "";
     $("prompt").disabled = false;
     $("send-btn").disabled = false;
+    $("prompt").placeholder = "Message…";
     $("prompt").focus();
   }
 });
