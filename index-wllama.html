@@ -89,6 +89,7 @@ const MODELS = {
   "350m": {
     label: "LFM2.5-350M",
     hf: { repo: "LiquidAI/LFM2.5-350M-GGUF", quant: "Q4_K_M" },
+    url: "https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF/resolve/main/LFM2.5-350M-Q4_K_M.gguf",
     vision: false,
   },
   "vl450": {
@@ -135,10 +136,24 @@ function addMsg(role, text) {
 }
 
 const wllama = new Wllama({ default: "https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/esm/wasm/wllama.wasm" });
-wllama.setCompat("default"); // auto: Safari/old browsers get compat build from CDN
+wllama.setCompat("default");
 
 try {
-  await wllama.loadModelFromHF(CFG.hf, {
+  const loadParams = {
+    n_ctx: N_CTX,
+    progressCallback: ({ loaded, total }) => {
+      if (total) {
+        const pct = loaded / total * 100;
+        $("bar-fill").style.width = pct + "%";
+        $("file-label").textContent = `Downloading — ${pct.toFixed(1)}% (${(loaded/1e6).toFixed(0)}/${(total/1e6).toFixed(0)} MB)`;
+      }
+    },
+  };
+  if (CFG.url) {
+    await wllama.loadModelFromUrl(CFG.url, loadParams);
+  } else {
+    await wllama.loadModelFromHF(CFG.hf, loadParams);
+  }
     n_ctx: N_CTX,
     progressCallback: ({ loaded, total }) => {
       if (total) {
