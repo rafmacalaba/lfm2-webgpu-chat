@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#10131a">
+<title>On-device SLM lab</title>
+<style>
+:root{color-scheme:dark;font:16px system-ui,sans-serif;background:#10131a;color:#e8edf5}*{box-sizing:border-box}body{margin:0;min-height:100dvh;display:flex;flex-direction:column}header{padding:max(14px,env(safe-area-inset-top)) 16px 12px;border-bottom:1px solid #29303b}h1{margin:0 0 5px;font-size:18px}small,#status{color:#aab5c5;font-size:13px;line-height:1.45}#status{margin-top:7px}#log{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:10px}.msg{max-width:90%;padding:10px 13px;border-radius:14px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.45}.user{align-self:flex-end;background:#2859ca}.assistant{align-self:flex-start;background:#202631}.system{align-self:stretch;color:#9eacbe;font-size:13px;text-align:center}#controls{padding:12px 16px max(12px,env(safe-area-inset-bottom));border-top:1px solid #29303b;display:grid;gap:8px}.row{display:flex;gap:8px}button,input{font:inherit;border:1px solid #354052;border-radius:10px;padding:11px 12px}button{color:#fff;background:#2859ca;font-weight:600}button:disabled,input:disabled{opacity:.45}input{min-width:0;flex:1;background:#1a202a;color:#e8edf5}progress{width:100%;height:7px;accent-color:#59d890}a{color:#9ec1ff}code{overflow-wrap:anywhere}
+</style>
+</head>
+<body>
+<header>
+  <h1>On-device SLM lab</h1>
+  <small>Experimental GitHub Pages path · WebGPU + WebLLM · no model runs until you press Load</small>
+  <div id="status">Checking browser capabilities…</div>
+</header>
+<main id="log"><div class="msg system">Candidate: SmolLM2 360M Instruct, Q4 WebGPU (~205 MB weights). This tests a smaller browser model; it is not Gemma 4.</div></main>
+<section id="controls">
+  <progress id="progress" max="1" value="0" hidden></progress>
+  <div class="row"><button id="load">Check &amp; load model</button><button id="unload" disabled>Unload / free GPU memory</button></div>
+  <form id="form" class="row"><input id="prompt" placeholder="Load model first…" autocomplete="off" disabled><button id="send" disabled>Send</button></form>
+  <small>Weights download from Hugging Face on first load. Chat prompts stay in this page. Worker/GPU memory is still browser-managed; WebGPU support and memory headroom vary by phone. <a href="./index-wllama.html">Return to current Wllama page</a>.</small>
+</section>
+<script type="module">
+const $ = id => document.getElementById(id);
+const status = text => $("status").textContent = text;
+const log = $("log");
+let engine;
+let messages = [{ role: "system", content: "You are a helpful assistant. Be concise." }];
+const add = (role, text = "") => {
+  const el = document.createElement("div");
+  el.className = `msg ${role}`;
+  el.textContent = text;
+  log.append(el);
+  log.scrollTop = log.scrollHeight;
+  return el;
+};
+
+async function inspect() {
+  const bits = [`${navigator.userAgent.includes("iPhone") ? "iPhone" : navigator.userAgent.includes("Android") ? "Android" : "Other browser"}`];
+  bits.push(`WebGPU: ${!!navigator.gpu}`);
+  bits.push(`OPFS: ${!!navigator.storage?.getDirectory}`);
+  try {
+    const { usage, quota } = await navigator.storage.estimate();
+    bits.push(`storage: ${usage ? (usage / 1e9).toFixed(2) : "?"}/${quota ? (quota / 1e9).toFixed(2) : "?"} GB`);
+  } catch { bits.push("storage estimate unavailable"); }
+  if (!navigator.gpu) {
+    status(`${bits.join(" · ")} — WebGPU missing. This experiment cannot run in this browser.`);
+    $("load").disabled = true;
+    return;
+  }
+  try {
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: "low-power" });
+    if (!adapter) throw new Error("No WebGPU adapter");
+    bits.push(`adapter: ${adapter.info?.description || adapter.info?.vendor || "available"}`);
+    bits.push(`max buffer: ${(adapter.limits.maxBufferSize / 1e6).toFixed(0)} MB`);
+    status(bits.join(" · "));
+  } catch (e) {
+    status(`${bits.join(" · ")} · adapter failed: ${e.message || e}`);
+    $("load").disabled = true;
+  }
+}
+await inspect();
+
+$("load").addEventListener("click", async () => {
+  $("load").disabled = true;
+  $("progress").hidden = false;
+  status("Loading WebLLM runtime and model… Keep page foregrounded.");
+  try {
+    const { CreateMLCEngine, prebuiltAppConfig } = await import("https://esm.run/@mlc-ai/web-llm");
+    const modelId = "SmolLM2-360M-Instruct-q4f16_1-MLC";
+    const appConfig = {
+      ...prebuiltAppConfig,
+      model_list: prebuiltAppConfig.model_list.map(m => m.model_id === modelId
+        ? { ...m, overrides: { ...m.overrides, context_window_size: 1024 } }
+        : m),
+    };
+    engine = await CreateMLCEngine(modelId, {
+      appConfig,
+      initProgressCallback: p => {
+        $("progress").value = p.progress || 0;
+        status(p.text || `Model loading ${Math.round((p.progress || 0) * 100)}%`);
+      },
+    });
+    status("Model ready on WebGPU. Try a short prompt; unload after testing.");
+    $("unload").disabled = false;
+    $("prompt").disabled = $("send").disabled = false;
+    $("prompt").placeholder = "Message…";
+    $("prompt").focus();
+  } catch (e) {
+    status(`Load failed: ${e?.message || e}. Try unload/reload or return to Wllama page.`);
+    console.error(e);
+    $("load").disabled = false;
+  }
+});
+
+$("form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const text = $("prompt").value.trim();
+  if (!engine || !text) return;
+  $("prompt").value = "";
+  $("prompt").disabled = $("send").disabled = true;
+  messages.push({ role: "user", content: text });
+  add("user", text);
+  const output = add("assistant");
+  try {
+    const stream = await engine.chat.completions.create({ messages, stream: true, max_tokens: 128, temperature: 0.2 });
+    let answer = "";
+    for await (const chunk of stream) {
+      answer += chunk.choices?.[0]?.delta?.content || "";
+      output.textContent = answer;
+      log.scrollTop = log.scrollHeight;
+    }
+    messages.push({ role: "assistant", content: answer });
+    // Bound retained conversation to limit prompt/KV-cache growth.
+    if (messages.length > 5) messages = [messages[0], ...messages.slice(-4)];
+    if (!answer) output.textContent = "(empty response)";
+  } catch (err) {
+    output.className = "msg system";
+    output.textContent = `Generation failed: ${err?.message || err}`;
+    status("Generation failed. GPU/device may have reclaimed resources; unload before retrying.");
+  } finally {
+    $("prompt").disabled = $("send").disabled = false;
+    $("prompt").focus();
+  }
+});
+
+$("unload").addEventListener("click", async () => {
+  $("unload").disabled = true;
+  $("prompt").disabled = $("send").disabled = true;
+  try {
+    await engine?.unload();
+    engine = undefined;
+    messages = [messages[0]];
+    status("Model unloaded. Browser GPU resources released; cached download may remain on disk.");
+  } catch (e) {
+    status(`Unload failed: ${e?.message || e}`);
+  }
+  $("load").disabled = false;
+});
+</script>
+</body>
+</html>
