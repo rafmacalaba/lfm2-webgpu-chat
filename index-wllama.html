@@ -61,6 +61,7 @@
   <select id="model-select" title="Switch model (reloads page)">
     <option value="350m">350M text</option>
     <option value="vl450">VL-450M vision</option>
+    <option value="agent12b">1.2B agent (tools)</option>
   </select>
 </header>
 <div id="log">
@@ -81,7 +82,7 @@
 <footer>Runs 100% in your browser. Nothing leaves your device.</footer>
 
 <script type="module">
-import { Wllama } from "https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/esm/index.js";
+import { Wllama } from "./wllama/index.js";
 
 // ponytail: unified single page; model via ?model= or header select
 const MODELS = {
@@ -95,12 +96,27 @@ const MODELS = {
     hf: { repo: "LiquidAI/LFM2.5-VL-450M-GGUF", quant: "Q4_0", mmprojQuant: "Q8_0" },
     vision: true,
   },
+  "agent12b": {
+    label: "LFM2.5-1.2B agent",
+    hf: { repo: "LiquidAI/LFM2.5-1.2B-Instruct-GGUF", quant: "Q4_K_M" },
+    vision: false,
+    tools: true,
+  },
 };
 const PARAMS = new URLSearchParams(location.search);
 const KEY = MODELS[PARAMS.get("model")] ? PARAMS.get("model") : "350m";
 const CFG = MODELS[KEY];
 const N_CTX = 2048; // phone memory ceiling; raise on desktop
 const MAX_TOKENS = 512;
+
+// Agent tools — all CORS-friendly, no API keys, work from any origin.
+const TOOLS = [
+  { name: "wiki_search", description: "Search Wikipedia for facts about people, places, events, science.", parameters: { type: "object", properties: { query: { type: "string", description: "search terms" } }, required: ["query"] } },
+  { name: "get_weather", description: "Current temperature, wind and conditions for a city.", parameters: { type: "object", properties: { location: { type: "string", description: "City, Country" } }, required: ["location"] } },
+  { name: "calculate", description: "Evaluate a math expression.", parameters: { type: "object", properties: { expression: { type: "string", description: "e.g. (2+3)*7" } }, required: ["expression"] } },
+  { name: "get_datetime", description: "Current local date and time of the device.", parameters: { type: "object", properties: {} } },
+];
+const SYS_AGENT = "You are a helpful assistant.";
 
 const $ = id => document.getElementById(id);
 const log = $("log");
@@ -118,8 +134,8 @@ function addMsg(role, text) {
   return d;
 }
 
-const wllama = new Wllama({ default: "https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/esm/wasm/wllama.wasm" });
-wllama.setCompat("default"); // auto: Safari/old browsers get compat build from CDN
+const wllama = new Wllama({ default: "./wasm/wllama-main.wasm" });
+wllama.setCompat({ wasm: "./wasm/wllama.wasm", worker: "./wasm/wllama.js" });
 
 try {
   await wllama.loadModelFromHF(CFG.hf, {
@@ -150,6 +166,7 @@ try {
 const history = []; // {role, content} — content is string (text) or array (vision)
 let busy = false;
 let pendingImage = null; // { data: ArrayBuffer, url: string }
+window.__cfg = CFG;
 window.__gc = () => ({ historyLen: history.length,
   imageBufsLeft: history.filter(m => Array.isArray(m.content) && m.content.some(p => p.type === "image")).length });
 
@@ -207,6 +224,85 @@ $("image-input").addEventListener("change", async ev => {
 
 $("stop-btn").addEventListener("click", () => { try { wllama.stopCompletion(); } catch {} });
 
+async function runTool(name, args) {
+  const j = r => r.ok ? r.json() : Promise.reject(new Error(r.status));
+  try {
+    if (name === "wiki_search") {
+      const s = await j(await fetch(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(args.query)}&srlimit=2&format=json&origin=*`));
+      const hits = s.query?.search || [];
+      if (!hits.length) return { result: "no hits" };
+      const page = hits[0];
+      const sum = await j(await fetch("https://en.wikipedia.org/api/rest_v1/page/summary/" + encodeURIComponent(page.title)));
+      return { title: page.title, summary: sum.extract || "", snippet: page.snippet?.replace(/<[^>]+>/g, "") };
+    }
+    if (name === "get_weather") {
+      const g = await j(await fetch("https://nominatim.openstreetmap.org/search?q=" + encodeURIComponent(args.location) + "&format=json&limit=1"));
+      if (!g.length) return { error: "location not found" };
+      const { lat, lon, display_name } = g[0];
+      const w = await j(await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m`));
+      const codes = {0:"clear",1:"mostly clear",2:"partly cloudy",3:"overcast",45:"fog",48:"rime fog",51:"light drizzle",53:"drizzle",61:"rain",63:"rain",65:"heavy rain",71:"snow",73:"snow",75:"heavy snow",80:"rain showers",81:"showers",82:"violent showers",95:"thunderstorm",96:"thunderstorm+hail",99:"thunderstorm+hail"};
+      const c = w.current || {};
+      return { location: display_name, temperature_c: c.temperature_2m, weather: codes[c.weather_code] || "unknown", wind_kmh: c.wind_speed_10m };
+    }
+    if (name === "calculate") {
+      if (!/^[-+*/%().\d\s^e]+$/i.test(args.expression)) return { error: "expression contains unsupported characters" };
+      const val = Function('"use strict";return (' + args.expression.replace(/\^/g, "**") + ")")();
+      return { expression: args.expression, result: val };
+    }
+    if (name === "get_datetime") return { datetime: new Date().toString() };
+    return { error: "unknown tool " + name };
+  } catch (e) { return { error: String(e?.message || e) }; }
+}
+
+// one agent turn: createChatCompletion with native tool calling → execute → loop (≤3 rounds)
+async function agentGenerate(display, t0) {
+  let finalText = "";
+  for (let round = 0; round < 3; round++) {
+    let content = "", toolCalls = [];
+    const stream = await wllama.createChatCompletion({
+      messages: history,
+      tools: TOOLS,
+      max_tokens: round === 2 ? MAX_TOKENS : 300,
+      temperature: 0.2,
+      stream: true,
+    });
+    for await (const chunk of stream) {
+      const d = chunk.choices[0]?.delta;
+      if (d?.content) {
+        if (!content) display.classList.remove("thinking");
+        content += d.content;
+        display.textContent = content;
+        $("gen-status").textContent = `Generating… ${((Date.now()-t0)/1000).toFixed(0)}s`;
+        log.scrollTop = log.scrollHeight;
+      }
+      if (d?.tool_calls) for (const tc of d.tool_calls) {
+        const i = tc.index ?? 0;
+        toolCalls[i] ??= { name: "", args: "" };
+        if (tc.function?.name) toolCalls[i].name += tc.function.name;
+        if (tc.function?.arguments) toolCalls[i].args += tc.function.arguments;
+      }
+    }
+    if (!toolCalls.length) { finalText = content; break; }
+    display.classList.add("thinking");
+    const parsed = toolCalls.map(tc => {
+      let args = {};
+      try { args = JSON.parse(tc.args || "{}"); } catch {}
+      return { name: tc.name, args };
+    });
+    for (const c of parsed) addMsg("sys", "🔧 " + c.name + "(" + JSON.stringify(c.args).slice(1, -1) + ")");
+    history.push({ role: "assistant", content: content || null,
+      tool_calls: parsed.map((c, i) => ({ id: "call_" + i, type: "function",
+        function: { name: c.name, arguments: JSON.stringify(c.args) } })) });
+    for (let i = 0; i < parsed.length; i++) {
+      const r = await runTool(parsed[i].name, parsed[i].args);
+      addMsg("sys", "↩︎ " + JSON.stringify(r).slice(0, 140) + (JSON.stringify(r).length > 140 ? "…" : ""));
+      history.push({ role: "tool", content: JSON.stringify(r).slice(0, 2000), tool_call_id: "call_" + i });
+    }
+    gcHistory();
+  }
+  return finalText;
+}
+
 $("chat-form").addEventListener("submit", async ev => {
   ev.preventDefault();
   if (busy) return;
@@ -233,6 +329,8 @@ $("chat-form").addEventListener("submit", async ev => {
     content = text;
   }
   history.push({ role: "user", content });
+  if (CFG.tools && history[0]?.role !== "system")
+    history.unshift({ role: "system", content: SYS_AGENT });
   gcHistory();
 
   const out = addMsg("assistant", "");
@@ -244,7 +342,33 @@ $("chat-form").addEventListener("submit", async ev => {
 
   let acc = "";
   try {
-    if (CFG.vision) {
+    if (CFG.tools) {
+      try {
+        acc = await agentGenerate(out);
+      } catch (toolErr) {
+        // wllama 3.6.1 GLUE bug: chat completion + tools crashes on text models.
+        // ponytail: drop fallback when wllama fixes it
+        addMsg("sys", "⚠️ tool engine unavailable — answering without tools");
+        for (let i = history.length - 1; i >= 0; i--)
+          if (history[i].role === "tool") history.splice(i, 1);
+        history.push({ role: "assistant", content: "" }); // placeholder replaced below
+        acc = "";
+        const plain = history.filter(m => m.role !== "assistant" || m.content);
+        await wllama.createCompletion({
+          prompt: (() => { let p = "<|startoftext|>"; for (const m of plain) { const c = typeof m.content === "string" ? m.content : m.content.map(x => x.text || "").join(" "); p += `${m.role}\n${c}\n`; } return p + "assistant\n"; })(),
+          max_tokens: MAX_TOKENS, temperature: 0.3, top_p: 0.9,
+          stop: ["\nuser\n", "\ntool\n"], stream: true,
+          onData: chunk => {
+            acc += chunk.choices[0].text;
+            out.textContent = acc;
+            log.scrollTop = log.scrollHeight;
+          },
+        }).catch(() => {});
+        history.pop(); // remove the placeholder assistant msg; final push happens below
+        acc = acc.trim();
+      }
+      if (!acc) out.textContent = "(no output)";
+    } else if (CFG.vision) {
       const stream = await wllama.createChatCompletion({
         messages: history,
         max_tokens: MAX_TOKENS,
@@ -261,8 +385,8 @@ $("chat-form").addEventListener("submit", async ev => {
         log.scrollTop = log.scrollHeight;
       }
     } else {
-      // createChatCompletion crashes in wllama 3.6.1 (GLUE readback bug) — raw
-      // completion with hand-rolled LFM2.5 template.
+      // createChatCompletion crashes in wllama 3.6.1 for text models (GLUE
+      // readback bug) — raw completion with hand-rolled LFM2.5 template.
       // ponytail: revisit when wllama ships a fix
       let prompt = "<|startoftext|>";
       for (const m of history) {
