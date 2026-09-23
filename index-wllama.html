@@ -82,7 +82,7 @@
 <footer>Runs 100% in your browser. Nothing leaves your device.</footer>
 
 <script type="module">
-import { Wllama } from "./wllama/index.js";
+import { Wllama } from "https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/esm/index.js";
 
 // ponytail: unified single page; model via ?model= or header select
 const MODELS = {
@@ -134,8 +134,8 @@ function addMsg(role, text) {
   return d;
 }
 
-const wllama = new Wllama({ default: "./wasm/wllama-main.wasm" });
-wllama.setCompat({ wasm: "./wasm/wllama.wasm", worker: "./wasm/wllama.js" });
+const wllama = new Wllama({ default: "https://cdn.jsdelivr.net/npm/@wllama/wllama@3.6.1/esm/wasm/wllama.wasm" });
+wllama.setCompat("default"); // auto: Safari/old browsers get compat build from CDN
 
 try {
   await wllama.loadModelFromHF(CFG.hf, {
