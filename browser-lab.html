@@ -27,7 +27,7 @@ const $ = id => document.getElementById(id);
 const status = text => $("status").textContent = text;
 const log = $("log");
 let engine;
-let messages = [{ role: "system", content: "You are a helpful assistant. Be concise." }];
+let messages = [{ role: "system", content: "You are a helpful assistant. Answer the latest question directly and avoid repeating previous wording unless the user asks." }];
 const add = (role, text = "") => {
   const el = document.createElement("div");
   el.className = `msg ${role}`;
@@ -105,7 +105,11 @@ $("form").addEventListener("submit", async e => {
   add("user", text);
   const output = add("assistant");
   try {
-    const stream = await engine.chat.completions.create({ messages, stream: true, max_tokens: 128, temperature: 0.2 });
+    const stream = await engine.chat.completions.create({
+      messages, stream: true, max_tokens: 128,
+      temperature: 0.8, top_p: 0.9,
+      frequency_penalty: 0.25, repetition_penalty: 1.05,
+    });
     let answer = "";
     for await (const chunk of stream) {
       answer += chunk.choices?.[0]?.delta?.content || "";
@@ -113,8 +117,8 @@ $("form").addEventListener("submit", async e => {
       log.scrollTop = log.scrollHeight;
     }
     messages.push({ role: "assistant", content: answer });
-    // Bound retained conversation to limit prompt/KV-cache growth.
-    if (messages.length > 5) messages = [messages[0], ...messages.slice(-4)];
+    // Keep one exchange only: small context, less repetition on tiny model.
+    if (messages.length > 3) messages = [messages[0], ...messages.slice(-2)];
     if (!answer) output.textContent = "(empty response)";
   } catch (err) {
     output.className = "msg system";
